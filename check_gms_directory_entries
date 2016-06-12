@@ -1,0 +1,168 @@
+#!/usr/bin/perl -w
+#############################################################################
+# 2008-11-19 Lars Michelsen <lars@vertical-visions.de>
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307,
+#
+# GNU General Public License: http://www.gnu.org/licenses/gpl-2.0.txt
+#
+# ##############################################################################
+# SCRIPT:       check_gms_directory_entries.pl
+# VERSION:      1.0
+# AUTHOR:       Lars Michelsen
+# DECRIPTION:   Connects to the Polycom GMS global directory and counts the
+#               number of entries in the global addressbook.
+# ##############################################################################
+
+use strict;
+use Net::Telnet;
+use Getopt::Long;
+Getopt::Long::Configure('bundling');
+
+my ($oHelp, $oHost, $oPw, $oName, $oIp, $oWarn, $oCrit, $oTimeout);
+my ($telnet, $return, $addresses, @addresses);
+
+my $host = '';
+my $pw = '';
+my $name = '';
+my $ip = '';
+my $timeout = 40;
+my $prompt = '/^$/';
+
+my $warn = -1;
+my $crit = -1;
+my $state = 'OK';
+my $output = '';
+my $perfdata = '';
+
+# Exit-Status-Array
+my %ERRORS = ('UNKNOWN' , '-1',
+  'OK' , '0',
+  'WARNING', '1',
+  'CRITICAL', '2');
+
+# Parameter handling ##########################################################
+
+GetOptions("H|host:s" => \$oHost,
+      "P|pw:s" => \$oPw,
+      "N|name:s" => \$oName,
+      "I|ip:s" => \$oIp,
+      "w|warn:i" => \$oWarn,
+      "c|crit:i" => \$oCrit,
+      "t|timeout:i" => \$oTimeout,
+      "h|help" => \$oHelp);
+
+if($oHelp || !$oHost || !$oPw || !$oName || !$oIp) {
+print <<EOU;
+  Usage: $0 -H <FQDN/IP: string>
+            -P <Password: string> -N <Client Name: string>
+            -I <Client IP: string> [-t <timeout in seconds: integer>]
+            [-w <warning level: integer] [-c <critical level: integer>]
+            [-h]
+
+
+    Options:
+
+    -H --host STRING or IPADDRESS
+        FQDN or IP-Address of the GMS host
+    -P --pw STRING
+        Password to access the global directory on GMS host
+    -N --name STRING
+        Name of the client host. In this case the monitoring server
+    -I --ip String
+        IP of the client host. In this case the monitoring server
+    -w --warn INTEGER
+        Warning treshold. Give the minimum number of entries in the
+        directory
+
+        Example:
+        Give a number of 10 to get a WARNING state on less than 10 entires
+    -c --crit INTEGER
+        Critical treshold. Give the minimum number of entries in the
+        directory
+
+        Example:
+        Give a number of 10 to get a CRITICAL state on less than 10 entires
+        occupied before critical state occurs.
+    -h --help
+        Print this help text
+EOU
+
+  exit($ERRORS{'UNKNOWN'});
+}
+
+$host = $oHost;
+$pw = $oPw;
+$name = $oName;
+$ip = $oIp;
+
+if($oWarn) {
+  $warn = $oWarn;
+}
+if($oCrit) {
+  $crit = $oCrit;
+}
+if($oTimeout) {
+  $timeout = $oTimeout;
+}
+
+# Script start ################################################################
+
+$telnet = new Net::Telnet(Port => 3601, Timeout => $timeout, Errmode => 'return', Dump_Log => '',Prompt => $prompt);
+$telnet->open($host);
+
+# Authentication
+$telnet->print('PVAL '.$pw);
+
+$return = $telnet->waitfor('/^AUTHORIZED\s[0-9]+$/');
+if(!$return) {
+  print STDERR "ERROR: Not authorized (".$telnet->errmsg().")\n";
+  exit(1);
+}
+
+# Register
+$telnet->print('SITEREG '.$name.'\\'.$ip.'\\'.$name.'\\\\\\\\\\\\909b819f-e7f5-4f84-b1b5-7989e1bf79e7\\\\check_polycom_gms_addressbook\\UNKNOWN\\H.323\\\\\\3000\\\\\\No\\\\\\No\\\\:,:,:,:,\\\\'.$name.'\\\\\\\\\\\\H323\\Yes\\No\\No\\2\\No\\\\No\\');
+
+$return = $telnet->waitfor('/REGCONFIRM/');
+if(!$return) {
+  print STDERR "ERROR: No regconfirm (".$telnet->errmsg().")\n";
+  exit(1);
+}
+
+# Get all addresses
+@addresses = $telnet->cmd(String => 'GETALL', Prompt => '/eob/');
+
+# Filter addresses
+for (my $i = 0; $i <= $#addresses; $i++ ) {
+  if($addresses[$i] !~ m/^A2/) {
+    splice(@addresses, $i, 1);
+  }
+}
+
+if($warn != -1 && $#addresses < $warn) {
+  $state = 'WARNING';
+}
+if($crit != -1 && $#addresses < $crit) {
+  $state = 'CRITICAL';
+}
+
+$output = $state.': Found '.$#addresses.' entries in global directory';
+$perfdata = ' | entries='.$#addresses;
+
+# Verbindung trennen
+$telnet->close();
+
+print($output.$perfdata."\n");
+exit($ERRORS{$state});
